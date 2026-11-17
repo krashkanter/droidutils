@@ -18,3 +18,5 @@ bash tools/build-service.sh
 cd service
 go test ./...
 ```
+
+[Optional phone-server integration](https://github.com/krashkanter/kela-server)

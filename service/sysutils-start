@@ -1,0 +1,7 @@
+#!/system/bin/sh
+umask 077
+mkdir -p /data/local/sysutils
+chmod 700 /data/local/sysutils
+# Keep one previous daemon log. Script logs have their own bounded storage.
+[ ! -f /data/local/sysutils/daemon.log ] || mv /data/local/sysutils/daemon.log /data/local/sysutils/daemon.previous.log
+exec /system/bin/sysutilsd -boot >> /data/local/sysutils/daemon.log 2>&1

@@ -72,6 +72,7 @@ class MainActivity: ComponentActivity() {
     var deleting by remember { mutableStateOf<JSONObject?>(null) }
     var setting by remember { mutableStateOf<JSONObject?>(null) }
     var service by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var updating by remember { mutableStateOf<JSONObject?>(null) }
     var pairing by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -93,6 +94,10 @@ class MainActivity: ComponentActivity() {
         }
     }
     LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { model.refresh(true); while (true) { delay(5000); model.refresh() } } }
+    LaunchedEffect(lifecycle, section) { if (section == 3) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        model.refreshUpdates(true)
+        while (true) { delay(if (model.state.value.updates?.optBoolean("running") == true) 2000 else 10000); model.refreshUpdates() }
+    } }
     LaunchedEffect(state.error, state.notice) { (state.error ?: state.notice)?.let { snackbar.showSnackbar(it); model.clearMessage() } }
     editor?.let { draft -> ScriptEditor(draft, state.busy, { editor = null }) { payload ->
         val id = draft.optString("id")
@@ -100,16 +105,16 @@ class MainActivity: ComponentActivity() {
     }; return }
     Scaffold(
         topBar = { TopAppBar(title = { Text("DroidUtils", fontWeight = FontWeight.SemiBold) }, actions = {
-            Action("Refresh", Icons.Rounded.Refresh, !state.refreshing) { model.refresh(true) }
+            Action("Refresh", Icons.Rounded.Refresh, !state.refreshing) { model.refresh(true); if (section == 3) model.refreshUpdates(true) }
             Action("Connection", Icons.Rounded.Tune) { pairing = true }
         }) },
         bottomBar = { NavigationBar {
-            listOf("Scripts" to Icons.Rounded.Terminal, "Settings" to Icons.Rounded.Settings, "Services" to Icons.Rounded.MiscellaneousServices).forEachIndexed { index, item ->
+            listOf("Scripts" to Icons.Rounded.Terminal, "Settings" to Icons.Rounded.Settings, "Services" to Icons.Rounded.MiscellaneousServices, "Updates" to Icons.Rounded.SystemUpdate).forEachIndexed { index, item ->
                 NavigationBarItem(selected = section == index, onClick = { section = index; query = "" }, icon = { Icon(item.second, item.first) }, label = { Text(item.first) }, alwaysShowLabel = false)
             }
         } },
         snackbarHost = { SnackbarHost(snackbar) },
-        floatingActionButton = { if (section != 2) FloatingActionButton(onClick = {
+        floatingActionButton = { if (section < 2) FloatingActionButton(onClick = {
             if (section == 0) editor = JSONObject().put("name", "").put("body", "#!/system/bin/sh\n").put("enabled", false).put("timeout", 60).put("order", 100)
             else setting = JSONObject().put("key", "").put("value", "")
         }) { Icon(Icons.Rounded.Add, if (section == 0) "Create script" else "Create setting") } }
@@ -122,7 +127,7 @@ class MainActivity: ComponentActivity() {
                 Spacer(Modifier.weight(1f))
                 if (section == 0) Action("Import script", Icons.Rounded.FileOpen) { importer.launch("*/*") }
             }
-            if (state.refreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (state.refreshing || (section == 3 && state.updatesLoading)) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (section == 1) SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
                 listOf("global", "secure", "system").forEachIndexed { i, ns -> SegmentedButton(selected = state.namespace == ns, onClick = { model.namespace(ns) }, shape = SegmentedButtonDefaults.itemShape(i, 3)) { Text(ns.replaceFirstChar { it.uppercase() }) } }
             }
@@ -164,6 +169,7 @@ class MainActivity: ComponentActivity() {
                         ListItem(headlineContent = { Text(name, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium) }, supportingContent = { Text(row.getString("state")) }, trailingContent = { Action(if (running) "Stop" else "Start", if (running) Icons.Rounded.Stop else Icons.Rounded.PlayArrow, !state.busy && name !in listOf("sysutils", "adbd")) { service = name to if (running) "stop" else "start" } })
                     }
                 }
+                3 -> UpdatesList(state, query, { model.updateAction("updates/check") }) { updating = it }
             }
         }
     }
@@ -171,6 +177,7 @@ class MainActivity: ComponentActivity() {
     service?.let { (name, action) -> AlertDialog(onDismissRequest = { service = null }, title = { Text("${action.replaceFirstChar { it.uppercase() }} $name?") }, confirmButton = { Action("Confirm", Icons.Rounded.Check) { model.action("POST", "services/$name/$action") { service = null } } }, dismissButton = { Action("Cancel", Icons.Rounded.Close) { service = null } }) }
     setting?.let { row -> SettingEditor(state.namespace, row, state.busy, { setting = null }) { key, value, delete -> model.action("PUT", "settings", JSONObject().put("namespace", state.namespace).put("key", key).put("value", value).put("delete", delete)) { setting = null } } }
     logs?.let { LogViewer(model, it, { logs = null }) }
+    updating?.let { item -> UpdateConfirm(item, state.busy || state.updates?.optBoolean("running") == true, { updating = null }) { model.updateAction("updates/apply", JSONObject().put("id", item.getString("id")).put("available", item.getString("available"))) { updating = null } } }
     if (pairing) {
         var token by remember { mutableStateOf("") }
         AlertDialog(onDismissRequest = { pairing = false }, title = { Text("Local service") }, text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -219,4 +226,59 @@ class MainActivity: ComponentActivity() {
         }.onFailure { status = it.message ?: "Unavailable" }; delay(1000)
     } }
     AlertDialog(onDismissRequest = close, title = { Column { Text(script.getString("name")); Text(status, style = MaterialTheme.typography.bodySmall) } }, text = { SelectionContainer { Text(text.ifEmpty { "No output" }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState())) } }, confirmButton = { Action("Close", Icons.Rounded.Close) { close() } })
+}
+
+fun restartImpact(item: JSONObject): String {
+    val key = (item.optString("id") + " " + item.optString("name")).lowercase()
+    return when {
+        "apk" in key || ("droidutils" in key && "service" !in key) -> "DroidUtils will be reinstalled and this app will close. Reopen it once the update finishes."
+        "sysutils" in key || "service" in key -> "The local root service restarts. The app disconnects for a few seconds and running scripts are stopped."
+        "debian" in key || "apt" in key || "chroot" in key -> "Packages inside the Debian chroot are upgraded. Daemons running in the chroot may restart; Android itself is not rebooted."
+        "magisk" in key || "kernel" in key || "lineage" in key || "rom" in key || "system" in key -> "A device reboot may be required before the update takes effect."
+        else -> "The affected component may restart while the update is applied."
+    }
+}
+@Composable fun UpdatesList(state: SysState, query: String, check: () -> Unit, apply: (JSONObject) -> Unit) {
+    val updates = state.updates
+    val running = updates?.optBoolean("running") == true
+    val items = updates?.optJSONArray("items")?.rows().orEmpty().filter { it.optString("name").contains(query, true) || it.optString("id").contains(query, true) }
+    LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(when { updates == null -> "Not loaded"; running -> updates.optString("operation").ifEmpty { "Working" }.replaceFirstChar { it.uppercase() } + "…"; else -> updates.optString("operation").ifEmpty { "${items.count { it.optBoolean("installable") }} ready to install" } }, style = MaterialTheme.typography.titleSmall)
+                    updates?.optString("error")?.takeIf { it.isNotEmpty() && !running }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                }
+                if (running) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                FilledTonalButton(onClick = check, enabled = !state.busy && !running && state.connected, modifier = Modifier.padding(start = 12.dp)) { Icon(Icons.Rounded.Sync, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Check") }
+            }
+        }
+        if (updates != null && items.isEmpty()) item { Text(if (query.isEmpty()) "No components reported" else "No matches", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        items(items, key = { it.getString("id") }) { item ->
+            val current = item.optString("current").ifEmpty { "unknown" }
+            val available = item.optString("available")
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(item.optString("name").ifEmpty { item.getString("id") }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (available.isNotEmpty() && available != current) "$current → $available" else current, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        Text(listOf(item.optString("status"), item.optString("detail")).filter { it.isNotEmpty() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 12, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (item.optBoolean("installable")) Action("Update ${item.optString("name")}", Icons.Rounded.Download, !state.busy && !running) { apply(item) }
+                    else if (item.optString("status") == "current") Icon(Icons.Rounded.CheckCircle, null, Modifier.padding(12.dp).size(20.dp), tint = MaterialTheme.colorScheme.outline)
+                }
+            }
+        }
+    }
+}
+@Composable fun UpdateConfirm(item: JSONObject, blocked: Boolean, close: () -> Unit, confirm: () -> Unit) {
+    val name = item.optString("name").ifEmpty { item.getString("id") }
+    AlertDialog(onDismissRequest = close, icon = { Icon(Icons.Rounded.SystemUpdate, null) }, title = { Text("Update $name?") }, text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("${item.optString("current").ifEmpty { "unknown" }} → ${item.optString("available").ifEmpty { "latest" }}", fontFamily = FontFamily.Monospace)
+        item.optString("detail").takeIf { it.isNotEmpty() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(Icons.Rounded.RestartAlt, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.tertiary); Spacer(Modifier.width(8.dp))
+            Text(restartImpact(item), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    } }, confirmButton = { TextButton(onClick = confirm, enabled = !blocked) { Text("Update") } }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
 }

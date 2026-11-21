@@ -39,6 +39,8 @@ data class SysState(
     val scripts: List<JSONObject> = emptyList(),
     val settings: List<JSONObject> = emptyList(),
     val services: List<JSONObject> = emptyList(),
+    val updates: JSONObject? = null,
+    val updatesLoading: Boolean = false,
     val namespace: String = "global",
     val connected: Boolean = false,
     val refreshing: Boolean = false,
@@ -69,6 +71,26 @@ class SysModel(application: Application): AndroidViewModel(application) {
             } catch (e: Exception) {
                 mutable.value = mutable.value.copy(connected = false, refreshing = false, error = if (manual || mutable.value.status == null) e.message else mutable.value.error)
             } finally { loading = false }
+        }
+    }
+    private var loadingUpdates = false
+    fun refreshUpdates(manual: Boolean = false) {
+        if (loadingUpdates) return
+        loadingUpdates = true
+        if (manual) mutable.value = mutable.value.copy(updatesLoading = true)
+        viewModelScope.launch {
+            try { mutable.value = mutable.value.copy(updates = JSONObject(api.request("GET", "updates")), updatesLoading = false) }
+            catch (e: Exception) { mutable.value = mutable.value.copy(updatesLoading = false, error = if (manual || mutable.value.updates == null) e.message else mutable.value.error) }
+            finally { loadingUpdates = false }
+        }
+    }
+    fun updateAction(path: String, body: JSONObject? = null, done: () -> Unit = {}) {
+        if (mutable.value.busy) return
+        mutable.value = mutable.value.copy(busy = true)
+        viewModelScope.launch {
+            try { api.request("POST", path, body); done(); refreshUpdates(true) }
+            catch (e: Exception) { mutable.value = mutable.value.copy(error = e.message) }
+            finally { mutable.value = mutable.value.copy(busy = false) }
         }
     }
     fun action(method: String, path: String, body: JSONObject? = null, done: () -> Unit = {}) {

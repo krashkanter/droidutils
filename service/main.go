@@ -54,6 +54,7 @@ type Server struct {
 	results             map[string]Result
 	active              map[string]running
 	slots               chan struct{}
+	updates             updateState
 }
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -390,6 +391,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleServices(w, r, parts)
 		return
 	}
+	if parts[1] == "updates" {
+		s.handleUpdates(w, r, parts)
+		return
+	}
 	fail(w, 404, "Not found")
 }
 func (s *Server) handleScripts(w http.ResponseWriter, r *http.Request, p []string) {
@@ -621,6 +626,13 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, p []stri
 	fail(w, 405, "Unsupported action")
 }
 func main() {
+	configureUpdateDNS("/data/local/debian")
+	for _, dir := range []string{"/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"} {
+		if entries, err := os.ReadDir(dir); err == nil && len(entries) != 0 {
+			_ = os.Setenv("SSL_CERT_DIR", dir)
+			break
+		}
+	}
 	root := flag.String("root", "/data/local/sysutils", "State directory")
 	boot := flag.Bool("boot", false, "Run enabled startup scripts once per boot")
 	flag.Parse()

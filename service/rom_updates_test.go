@@ -67,7 +67,7 @@ func TestScanROMNewerOfficialIsManualOnly(t *testing.T) {
 	if it.Current != "24.0 (20261110)" || it.Available != "24.0 (20261117)" {
 		t.Fatalf("versions %q -> %q", it.Current, it.Available)
 	}
-	for _, want := range []string{"20261110", "Automatic flashing is disabled", "boot", "system_ext", "AVB", "lineage-24.0-20261117-nightly-merlinx-signed.zip"} {
+	for _, want := range []string{romCustomImageDate, "Automatic flashing is disabled", "boot", "system_ext", "AVB", "lineage-24.0-20261117-nightly-merlinx-signed.zip"} {
 		if !strings.Contains(it.Detail, want) {
 			t.Errorf("detail missing %q: %s", want, it.Detail)
 		}
@@ -83,7 +83,7 @@ func TestScanROMCurrent(t *testing.T) {
 	withROMAPI(t, 200, romPayload)
 	var calls []string
 	it := scanROM(context.Background(), romProps(merlinxProps("24.0-20261117-UNOFFICIAL-merlinx"), &calls))
-	if it.Status != "current" || it.Installable || !strings.Contains(it.Detail, "20261110") {
+	if it.Status != "current" || it.Installable || !strings.Contains(it.Detail, romCustomImageDate) {
 		t.Fatalf("unexpected %+v", it)
 	}
 }

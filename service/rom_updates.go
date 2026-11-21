@@ -25,7 +25,7 @@ import (
 
 const (
 	romDevice          = "merlinx"
-	romCustomImageDate = "20261110"
+	romCustomImageDate = "20261117"
 	romMaxBody         = 2 << 20
 )
 
